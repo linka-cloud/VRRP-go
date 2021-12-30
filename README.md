@@ -1,5 +1,6 @@
 # vrrp-go
 由golang实现的[VRRP-v3](https://tools.ietf.org/html/rfc5798), 点击超链接获取关于VRRP的信息。
+
 [VRRP-v3](https://tools.ietf.org/html/rfc5798) implemented by golang，click hyperlink get details about VRRP
 
 ## example
@@ -19,27 +20,29 @@ import (
 )
 
 var (
-	VRID     int
-	Priority int
+	vrid     int
+	priority int
+	iface    string
 )
 
 func init() {
-	flag.IntVar(&VRID, "vrid", 233, "virtual router ID")
-	flag.IntVar(&Priority, "pri", 100, "router priority")
+	flag.IntVar(&vrid, "vrid", 233, "virtual router id")
+	flag.IntVar(&priority, "pri", 100, "router priority")
+	flag.StringVar(&iface, "iface", "eth0", "network interface")
 }
 
 func main() {
 	log := logrus.StandardLogger()
 	flag.Parse()
 	vrrp.SetLogLevel(logrus.InfoLevel)
-	vr, err := vrrp.NewVirtualRouter(byte(VRID), "eth0", false, vrrp.IPv4)
+	vr, err := vrrp.NewVirtualRouter(byte(vrid), iface, false, vrrp.IPv4)
 	if err != nil {
 		log.Fatal(err)
 	}
 	if err := vr.SetAdvInterval(100 * time.Millisecond); err != nil {
 		logrus.Fatal(err)
 	}
-	if err := vr.SetPriorityAndMasterAdvInterval(byte(Priority), time.Millisecond*100); err != nil {
+	if err := vr.SetPriorityAndMasterAdvInterval(byte(priority), time.Millisecond*100); err != nil {
 		log.Fatal(err)
 	}
 	handle := func(t vrrp.Transition) {
@@ -70,7 +73,6 @@ func main() {
 	}
 
 }
-
 ```
 
 ```shell
