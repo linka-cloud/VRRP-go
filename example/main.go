@@ -1,9 +1,3 @@
-# VRRP-go
-由golang实现的[VRRP-v3](https://tools.ietf.org/html/rfc5798), 点击超链接获取关于VRRP的信息。
-[VRRP-v3](https://tools.ietf.org/html/rfc5798) implemented by golang，click hyperlink get details about VRRP
-
-## example
-```go
 package main
 
 import (
@@ -70,14 +64,3 @@ func main() {
 	}
 
 }
-
-```
-
-```shell
-GOOS=linux go build -o vr example/main.go
-#execute on host1
-./vr -vrid=200 -pri=150
-#execute on host2
-./vr -vrid=200 -pri=230
-```
-

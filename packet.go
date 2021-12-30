@@ -1,4 +1,4 @@
-package VRRP
+package vrrp
 
 import (
 	"errors"
@@ -14,8 +14,8 @@ type VRRPPacket struct {
 }
 
 type PseudoHeader struct {
-	Saddr    net.IP
-	Daddr    net.IP
+	SAddr    net.IP
+	DAddr    net.IP
 	Zero     uint8
 	Protocol uint8
 	Len      uint16
@@ -23,21 +23,21 @@ type PseudoHeader struct {
 
 func (psh *PseudoHeader) ToBytes() []byte {
 	var octets = make([]byte, 36)
-	copy(octets, psh.Saddr)
-	copy(octets[16:], psh.Daddr)
+	copy(octets, psh.SAddr)
+	copy(octets[16:], psh.DAddr)
 	copy(octets[32:], []byte{psh.Zero, psh.Protocol, byte(psh.Len >> 8), byte(psh.Len)})
 	return octets
 }
 
 func FromBytes(IPvXVersion byte, octets []byte) (*VRRPPacket, error) {
 	if len(octets) < 8 {
-		return nil, errors.New("faulty VRRP packet size")
+		return nil, errors.New("faulty vrrp packet size")
 	}
 	var packet VRRPPacket
 	for index := 0; index < 8; index++ {
 		packet.Header[index] = octets[index]
 	}
-	//todo validate the number of IPvX addresses
+	// todo validate the number of IPvX addresses
 	var countofaddrs = int(packet.GetIPvXAddrCount())
 	switch IPvXVersion {
 	case 4:
@@ -46,7 +46,7 @@ func FromBytes(IPvXVersion byte, octets []byte) (*VRRPPacket, error) {
 	default:
 		return nil, fmt.Errorf("faulty IPvX version %d", IPvXVersion)
 	}
-	//to compatible with VRRP v2 packet, ignore the auth info
+	// to compatible with vrrp v2 packet, ignore the auth info
 	if 8+countofaddrs*4 > len(octets) {
 		return nil, fmt.Errorf("The value of filed IPvXAddrCount doesn't match the length of octets")
 	}
@@ -86,19 +86,21 @@ func (packet *VRRPPacket) GetIPvXAddr(version byte) (addrs []net.IP) {
 	}
 }
 
-func (packet *VRRPPacket) AddIPvXAddr(version byte, ip net.IP) {
+func (packet *VRRPPacket) AddIPvXAddr(version byte, ip net.IP) error {
 	switch version {
 	case 4:
 		packet.IPAddress = append(packet.IPAddress, [4]byte{ip[12], ip[13], ip[14], ip[15]})
 		packet.setIPvXAddrCount(packet.GetIPvXAddrCount() + 1)
-		//todo byte maybe overflow
+		// todo byte maybe overflow
+		return nil
 	case 6:
 		for index := 0; index < 4; index++ {
 			packet.IPAddress = append(packet.IPAddress, [4]byte{ip[index*4+0], ip[index*4+1], ip[index*4+2], ip[index*4+3]})
 		}
 		packet.setIPvXAddrCount(packet.GetIPvXAddrCount() + 1)
+		return nil
 	default:
-		panic("VRRPPacket.AddIPvXAddr: only support IPv4 and IPv6 address")
+		return errors.New("VRRPPacket.AddIPvXAddr: only support IPv4 and IPv6 address")
 	}
 }
 
@@ -106,7 +108,7 @@ func (packet *VRRPPacket) GetVersion() byte {
 	return (packet.Header[0] & 240) >> 4
 }
 
-func (packet *VRRPPacket) SetVersion(Version VRRPVersion) {
+func (packet *VRRPPacket) SetVersion(Version Version) {
 	packet.Header[0] = (packet.Header[0] & 15) | (byte(Version) << 4)
 }
 

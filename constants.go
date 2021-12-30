@@ -1,19 +1,19 @@
-package VRRP
+package vrrp
 
 import (
 	"net"
 	"time"
 )
 
-type VRRPVersion byte
+type Version byte
 
 const (
-	VRRPv1 VRRPVersion = 1
-	VRRPv2 VRRPVersion = 2
-	VRRPv3 VRRPVersion = 3
+	VRRPv1 Version = 1
+	VRRPv2 Version = 2
+	VRRPv3 Version = 3
 )
 
-func (v VRRPVersion) String() string {
+func (v Version) String() string {
 	switch v {
 	case VRRPv1:
 		return "VRRPVersion1"
@@ -22,7 +22,7 @@ func (v VRRPVersion) String() string {
 	case VRRPv3:
 		return "VRRPVersion3"
 	default:
-		return "unknown VRRP version"
+		return "unknown version"
 	}
 }
 
@@ -38,39 +38,39 @@ const (
 )
 
 const (
-	VRRPMultiTTL         = 255
-	VRRPIPProtocolNumber = 112
+	MultiTTL         = 255
+	IPProtocolNumber = 112
 )
 
-var VRRPMultiAddrIPv4 = net.IPv4(224, 0, 0, 18)
-var VRRPMultiAddrIPv6 = net.ParseIP("FF02:0:0:0:0:0:0:12")
+var MultiAddrIPv4 = net.IPv4(224, 0, 0, 18)
+var MultiAddrIPv6 = net.ParseIP("FF02:0:0:0:0:0:0:12")
 
-var BaordcastHADDR, _ = net.ParseMAC("ff:ff:ff:ff:ff:ff")
+var BroadcastHADDR, _ = net.ParseMAC("ff:ff:ff:ff:ff:ff")
 
-type EVENT byte
+type Event byte
 
 const (
-	SHUTDOWN EVENT = iota
-	START
+	EventShutdown Event = iota
+	EventStart
 )
 
-func (e EVENT) String() string {
+func (e Event) String() string {
 	switch e {
-	case START:
-		return "START"
-	case SHUTDOWN:
-		return "SHUTDOWN"
+	case EventStart:
+		return "start"
+	case EventShutdown:
+		return "shutdown"
 	default:
 		return "unknown event"
 	}
 }
 
-const PACKETQUEUESIZE = 1000
-const EVENTCHANNELSIZE = 1
+const PacketQueueSize = 1000
+const EventChannelSize = 1
 
-type transition int
+type Transition int
 
-func (t transition) String() string {
+func (t Transition) String() string {
 	switch t {
 	case Master2Backup:
 		return "master to backup"
@@ -90,7 +90,7 @@ func (t transition) String() string {
 }
 
 const (
-	Master2Backup transition = iota
+	Master2Backup Transition = iota
 	Backup2Master
 	Init2Master
 	Init2Backup
