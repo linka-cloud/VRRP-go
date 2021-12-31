@@ -337,7 +337,7 @@ func (con *IPv6Con) ReadMessage() (*VRRPPacket, error) {
 			dst = oobdata[index].Data[:16]
 		}
 	}
-	if getTTL == false {
+	if !getTTL {
 		return nil, fmt.Errorf("IPv6Con.ReadMessage: HOPLIMIT not found")
 	}
 	if dst == nil {

@@ -1,6 +1,6 @@
 module go.linka.cloud/vrrp-go
 
-go 1.18
+go 1.16
 
 require (
 	github.com/mdlayher/arp v0.0.0-20191213142603-f72070a231fc

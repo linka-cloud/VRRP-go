@@ -1,7 +1,6 @@
 package vrrp
 
 import (
-	"errors"
 	"fmt"
 	"net"
 	"time"
@@ -31,50 +30,53 @@ type VirtualRouter struct {
 	advertisementTicker *time.Ticker
 	masterDownTimer     *time.Timer
 	transitionsCh       chan Transition
+
+	iface string
 }
 
 // NewVirtualRouter create a new virtual router with designated parameters
-func NewVirtualRouter(vrid byte, nif string, Owner bool, ipvx byte) (*VirtualRouter, error) {
-	if ipvx != IPv4 && ipvx != IPv6 {
-		return nil, errors.New("NewVirtualRouter: parameter IPvx must be IPv4 or IPv6")
-	}
+func NewVirtualRouter(opts ...Option) (*VirtualRouter, error) {
 	vr := &VirtualRouter{}
-	vr.id = vrid
-	vr.macAddressIPv4, _ = net.ParseMAC(fmt.Sprintf("00-00-5E-00-01-%X", vrid))
-	vr.macAddressIPv6, _ = net.ParseMAC(fmt.Sprintf("00-00-5E-00-02-%X", vrid))
-	vr.owner = Owner
-	// default values that defined by RFC 5798
-	if Owner {
-		vr.priority = 255
-	}
+	vr.id = 100
+	vr.ipvX = IPv4
+
 	vr.state = INIT
 	vr.preempt = defaultPreempt
-	if err := vr.SetAdvInterval(defaultAdvertisementInterval); err != nil {
-		return nil, fmt.Errorf("vr.SetAdvInterval %w", err)
+	if err := vr.setAdvInterval(defaultAdvertisementInterval); err != nil {
+		return nil, fmt.Errorf("vr.setAdvInterval %w", err)
 	}
-	if err := vr.SetPriorityAndMasterAdvInterval(defaultPriority, defaultAdvertisementInterval); err != nil {
-		return nil, fmt.Errorf("vr.SetPriorityAndMasterAdvInterval %w", err)
-	}
-
+	vr.setPriority(defaultPriority)
+	vr.setMasterAdvInterval(uint16(defaultAdvertisementInterval / (10 * time.Millisecond)))
 	// make
 	vr.protectedIPAddrs = make(map[[16]byte]bool)
 	vr.eventChannel = make(chan Event, EventChannelSize)
 	vr.packetQueue = make(chan *VRRPPacket, PacketQueueSize)
 
-	vr.ipvX = ipvx
-	NetworkInterface, err := net.InterfaceByName(nif)
+	var err error
+	vr.iface, err = defaultIFace()
+	if err != nil {
+		return nil, err
+	}
+	for _, o := range opts {
+		if err := o(vr); err != nil {
+			return nil, err
+		}
+	}
+	networkInterface, err := net.InterfaceByName(vr.iface)
 	if err != nil {
 		return nil, fmt.Errorf("NewVirtualRouter: %w", err)
 	}
-	vr.netInterface = NetworkInterface
+	vr.netInterface = networkInterface
 	// find preferred local IP address
-	vr.preferredSourceIP, err = findIPByInterface(NetworkInterface, ipvx)
+	vr.preferredSourceIP, err = findIPByInterface(networkInterface, vr.ipvX)
 	if err != nil {
 		return nil, fmt.Errorf("NewVirtualRouter: %w", err)
 	}
-	if ipvx == IPv4 {
+	vr.macAddressIPv4, _ = net.ParseMAC(fmt.Sprintf("00-00-5E-00-01-%X", vr.id))
+	vr.macAddressIPv6, _ = net.ParseMAC(fmt.Sprintf("00-00-5E-00-02-%X", vr.id))
+	if vr.ipvX == IPv4 {
 		// set up ARP client
-		vr.ipAddrAnnouncer, err = NewIPv4AddrAnnouncer(NetworkInterface)
+		vr.ipAddrAnnouncer, err = NewIPv4AddrAnnouncer(networkInterface)
 		if err != nil {
 			return nil, err
 		}
@@ -85,7 +87,7 @@ func NewVirtualRouter(vrid byte, nif string, Owner bool, ipvx byte) (*VirtualRou
 		}
 	} else {
 		// set up ND client
-		vr.ipAddrAnnouncer, err = NewIPv6AddrAnnouncer(NetworkInterface)
+		vr.ipAddrAnnouncer, err = NewIPv6AddrAnnouncer(networkInterface)
 		if err != nil {
 			return nil, err
 		}
@@ -95,34 +97,16 @@ func NewVirtualRouter(vrid byte, nif string, Owner bool, ipvx byte) (*VirtualRou
 			return nil, err
 		}
 	}
-	logger.Debugf("virtual router %v initialized, working on %v", vrid, nif)
+	logger.Debugf("virtual router %v initialized, working on %v", vr.id, vr.iface)
 	return vr, nil
-
 }
 
-func (r *VirtualRouter) setPriority(Priority byte) *VirtualRouter {
+func (r *VirtualRouter) setPriority(priority byte) *VirtualRouter {
 	if r.owner {
 		return r
 	}
-	r.priority = Priority
+	r.priority = priority
 	return r
-}
-
-func (r *VirtualRouter) SetAdvInterval(interval time.Duration) error {
-	if interval < 10*time.Millisecond {
-		return errors.New("interval can not less than 10 ms")
-	}
-	r.advertisementInterval = uint16(interval / (10 * time.Millisecond))
-	return nil
-}
-
-func (r *VirtualRouter) SetPriorityAndMasterAdvInterval(priority byte, interval time.Duration) error {
-	r.setPriority(priority)
-	if interval < 10*time.Millisecond {
-		return errors.New("interval can not less than 10 ms")
-	}
-	r.setMasterAdvInterval(uint16(interval / (10 * time.Millisecond)))
-	return nil
 }
 
 func (r *VirtualRouter) setMasterAdvInterval(interval uint16) *VirtualRouter {
@@ -133,29 +117,14 @@ func (r *VirtualRouter) setMasterAdvInterval(interval uint16) *VirtualRouter {
 	return r
 }
 
-func (r *VirtualRouter) SetPreemptMode(flag bool) *VirtualRouter {
-	r.preempt = flag
-	return r
-}
-
-func (r *VirtualRouter) AddIPvXAddr(ip net.IP) {
-	var key [16]byte
-	copy(key[:], ip)
-	if _, ok := r.protectedIPAddrs[key]; ok {
-		logger.Errorf("VirtualRouter.AddIPvXAddr: add redundant IP addr %v", ip)
-	} else {
-		r.protectedIPAddrs[key] = true
-	}
-}
-
-func (r *VirtualRouter) RemoveIPvXAddr(ip net.IP) {
+func (r *VirtualRouter) removeIPvXAddr(ip net.IP) {
 	var key [16]byte
 	copy(key[:], ip)
 	if _, ok := r.protectedIPAddrs[key]; ok {
 		delete(r.protectedIPAddrs, key)
 		logger.Debugf("IP %v removed", ip)
 	} else {
-		logger.Errorf("VirtualRouter.RemoveIPvXAddr: remove inexistent IP addr %v", ip)
+		logger.Errorf("VirtualRouter.removeIPvXAddr: remove inexistent IP addr %v", ip)
 	}
 }
 
@@ -382,7 +351,7 @@ func (r *VirtualRouter) eventLoop() {
 					r.resetMasterDownTimerToSkewTime()
 					continue
 				}
-				if r.preempt == false || packet.GetPriority() > r.priority || (packet.GetPriority() == r.priority && largerThan(packet.Pshdr.SAddr, r.preferredSourceIP)) {
+				if !r.preempt || packet.GetPriority() > r.priority || (packet.GetPriority() == r.priority && largerThan(packet.Pshdr.SAddr, r.preferredSourceIP)) {
 					// reset master down timer
 					r.setMasterAdvInterval(packet.GetAdvertisementInterval())
 					r.resetMasterDownTimer()
@@ -503,7 +472,7 @@ func (r *VirtualRouter) eventSelector() {
 					r.resetMasterDownTimerToSkewTime()
 					continue
 				}
-				if r.preempt == false || packet.GetPriority() > r.priority || (packet.GetPriority() == r.priority && largerThan(packet.Pshdr.SAddr, r.preferredSourceIP)) {
+				if !r.preempt || packet.GetPriority() > r.priority || (packet.GetPriority() == r.priority && largerThan(packet.Pshdr.SAddr, r.preferredSourceIP)) {
 					// reset master down timer
 					r.setMasterAdvInterval(packet.GetAdvertisementInterval())
 					r.resetMasterDownTimer()

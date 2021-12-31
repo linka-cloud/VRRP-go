@@ -100,7 +100,7 @@ func (packet *VRRPPacket) AddIPvXAddr(version byte, ip net.IP) error {
 		packet.setIPvXAddrCount(packet.GetIPvXAddrCount() + 1)
 		return nil
 	default:
-		return errors.New("VRRPPacket.AddIPvXAddr: only support IPv4 and IPv6 address")
+		return errors.New("VRRPPacket.addIPvXAddr: only support IPv4 and IPv6 address")
 	}
 }
 

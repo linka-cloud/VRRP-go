@@ -16,26 +16,29 @@ var (
 	vrid     int
 	priority int
 	iface    string
+	preemt   bool
 )
 
 func init() {
 	flag.IntVar(&vrid, "vrid", 233, "virtual router id")
 	flag.IntVar(&priority, "pri", 100, "router priority")
 	flag.StringVar(&iface, "iface", "eth0", "network interface")
+	flag.BoolVar(&preemt, "preempt", false, "set preempt mode")
 }
 
 func main() {
 	log := logrus.StandardLogger()
 	flag.Parse()
 	vrrp.SetLogLevel(logrus.InfoLevel)
-	vr, err := vrrp.NewVirtualRouter(byte(vrid), iface, false, vrrp.IPv4)
+	vr, err := vrrp.NewVirtualRouter(
+		vrrp.WithVRID(byte(vrid)),
+		vrrp.WithInterface(iface),
+		vrrp.WithAdvInterval(100*time.Millisecond),
+		vrrp.WithPriority(byte(priority)),
+		vrrp.WithMasterAdvInterval(100*time.Millisecond),
+		vrrp.WithPreemtpMode(preemt),
+	)
 	if err != nil {
-		log.Fatal(err)
-	}
-	if err := vr.SetAdvInterval(100 * time.Millisecond); err != nil {
-		logrus.Fatal(err)
-	}
-	if err := vr.SetPriorityAndMasterAdvInterval(byte(priority), time.Millisecond*100); err != nil {
 		log.Fatal(err)
 	}
 	handle := func(t vrrp.Transition) {
