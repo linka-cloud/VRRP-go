@@ -86,9 +86,11 @@ func (r *VirtualRouter) setPreemptMode(flag bool) *VirtualRouter {
 	return r
 }
 
-func WithIPvXAddr(ip net.IP) Option {
+func WithIPvXAddr(ips ...net.IP) Option {
 	return func(r *VirtualRouter) error {
-		r.addIPvXAddr(ip)
+		for _, v := range ips {
+			r.addIPvXAddr(v)
+		}
 		return nil
 	}
 }

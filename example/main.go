@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"time"
@@ -27,9 +30,14 @@ func init() {
 }
 
 func main() {
+	vips := []string{"172.17.0.42", "172.17.0.43"}
 	log := logrus.StandardLogger()
 	flag.Parse()
 	vrrp.SetLogLevel(logrus.InfoLevel)
+	var ips []net.IP
+	for _, v := range vips {
+		ips = append(ips, net.ParseIP(v))
+	}
 	vr, err := vrrp.NewVirtualRouter(
 		vrrp.WithVRID(byte(vrid)),
 		vrrp.WithInterface(iface),
@@ -37,18 +45,25 @@ func main() {
 		vrrp.WithPriority(byte(priority)),
 		vrrp.WithMasterAdvInterval(100*time.Millisecond),
 		vrrp.WithPreemtpMode(preemt),
+		vrrp.WithIPvXAddr(ips...),
 	)
 	if err != nil {
 		log.Fatal(err)
 	}
+	var hctx context.Context
+	var hcancel func()
 	handle := func(t vrrp.Transition) {
 		switch t {
 		case vrrp.Backup2Master:
 			log.Info("init to master")
+			hctx, hcancel = context.WithCancel(context.Background())
+			go run(hctx)
 		case vrrp.Master2Init:
 			log.Info("master to init")
+			hcancel()
 		case vrrp.Master2Backup:
 			log.Info("master to backup")
+			hcancel()
 		}
 	}
 	ch := make(chan vrrp.Transition, 10)
@@ -61,6 +76,9 @@ func main() {
 			handle(t)
 		case s := <-sigs:
 			fmt.Println()
+			if hcancel != nil {
+				hcancel()
+			}
 			log.Warnf("received: %v", s)
 			log.Warn("exiting...")
 			vr.Stop()
@@ -68,4 +86,31 @@ func main() {
 		}
 	}
 
+}
+
+func run(ctx context.Context) {
+	errs := make(chan error, 1)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		logrus.Infof(r.RemoteAddr)
+		w.Write([]byte("ok"))
+	})
+	srv := http.Server{
+		Addr:    ":8888",
+		Handler: mux,
+	}
+	go func() {
+		errs <- srv.ListenAndServe()
+	}()
+	for {
+		select {
+		case err := <-errs:
+			logrus.WithError(err).Error("web server stopped")
+		case <-ctx.Done():
+			logrus.Warn(ctx.Err())
+			srv.Shutdown(context.Background())
+			return
+		}
+	}
 }

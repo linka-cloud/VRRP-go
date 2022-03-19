@@ -1,6 +1,7 @@
 package vrrp
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"time"
@@ -24,33 +25,36 @@ type VirtualRouter struct {
 	protectedIPAddrs    map[[16]byte]bool
 	state               int
 	ipLayerInterface    IPConnection
-	ipAddrAnnouncer     AddrAnnouncer
+	ipAddrSpeaker       AddrSpeaker
 	eventChannel        chan Event
 	packetQueue         chan *VRRPPacket
 	advertisementTicker *time.Ticker
 	masterDownTimer     *time.Timer
 	transitionsCh       chan Transition
 
-	iface string
+	iface         string
+	cancelSpeaker func()
+	stop          chan struct{}
+	fw            *forwarder
 }
 
 // NewVirtualRouter create a new virtual router with designated parameters
 func NewVirtualRouter(opts ...Option) (*VirtualRouter, error) {
-	vr := &VirtualRouter{}
-	vr.id = 100
-	vr.ipvX = IPv4
-
-	vr.state = INIT
-	vr.preempt = defaultPreempt
+	vr := &VirtualRouter{
+		id:               100,
+		ipvX:             IPv4,
+		state:            INIT,
+		preempt:          defaultPreempt,
+		protectedIPAddrs: make(map[[16]byte]bool),
+		eventChannel:     make(chan Event, EventChannelSize),
+		packetQueue:      make(chan *VRRPPacket, PacketQueueSize),
+		stop:             make(chan struct{}),
+	}
 	if err := vr.setAdvInterval(defaultAdvertisementInterval); err != nil {
 		return nil, fmt.Errorf("vr.setAdvInterval %w", err)
 	}
 	vr.setPriority(defaultPriority)
 	vr.setMasterAdvInterval(uint16(defaultAdvertisementInterval / (10 * time.Millisecond)))
-	// make
-	vr.protectedIPAddrs = make(map[[16]byte]bool)
-	vr.eventChannel = make(chan Event, EventChannelSize)
-	vr.packetQueue = make(chan *VRRPPacket, PacketQueueSize)
 
 	var err error
 	vr.iface, err = defaultIFace()
@@ -76,7 +80,7 @@ func NewVirtualRouter(opts ...Option) (*VirtualRouter, error) {
 	vr.macAddressIPv6, _ = net.ParseMAC(fmt.Sprintf("00-00-5E-00-02-%X", vr.id))
 	if vr.ipvX == IPv4 {
 		// set up ARP client
-		vr.ipAddrAnnouncer, err = NewIPv4AddrAnnouncer(networkInterface)
+		vr.ipAddrSpeaker, err = NewIPv4AddrAnnouncer(networkInterface)
 		if err != nil {
 			return nil, err
 		}
@@ -87,7 +91,7 @@ func NewVirtualRouter(opts ...Option) (*VirtualRouter, error) {
 		}
 	} else {
 		// set up ND client
-		vr.ipAddrAnnouncer, err = NewIPv6AddrAnnouncer(networkInterface)
+		vr.ipAddrSpeaker, err = NewIPv6AddrAnnouncer(networkInterface)
 		if err != nil {
 			return nil, err
 		}
@@ -96,6 +100,10 @@ func NewVirtualRouter(opts ...Option) (*VirtualRouter, error) {
 		if err != nil {
 			return nil, err
 		}
+	}
+	vr.fw, err = newForwarder()
+	if err != nil {
+		return nil, err
 	}
 	logger.Debugf("virtual router %v initialized, working on %v", vr.id, vr.iface)
 	return vr, nil
@@ -225,6 +233,41 @@ func (r *VirtualRouter) resetMasterDownTimerToSkewTime() {
 }
 
 func (r *VirtualRouter) transitionDoWork(t Transition) {
+	switch t {
+	case Init2Backup:
+	case Backup2Master, Init2Master:
+		var ctx context.Context
+		ctx, r.cancelSpeaker = context.WithCancel(context.Background())
+		go r.ipAddrSpeaker.Respond(ctx, r)
+		if err := r.fw.start(r); err != nil {
+			logger.WithError(err).Error("init forwarding failed")
+		}
+	case Master2Backup:
+		if r.cancelSpeaker != nil {
+			r.cancelSpeaker()
+			r.cancelSpeaker = nil
+		}
+		if err := r.fw.stop(); err != nil {
+			logger.WithError(err).Error("stop forwarding failed")
+		}
+	case Master2Init:
+		if r.cancelSpeaker != nil {
+			r.cancelSpeaker()
+			r.cancelSpeaker = nil
+		}
+		if err := r.fw.stop(); err != nil {
+			logger.WithError(err).Error("stop forwarding failed")
+		}
+		if err := r.fw.close(); err != nil {
+			logger.WithError(err).Error("forwarding cleanup failed")
+		}
+		close(r.stop)
+	case Backup2Init:
+		if err := r.fw.close(); err != nil {
+			logger.WithError(err).Error("forwarding cleanup failed")
+		}
+		close(r.stop)
+	}
 	if r.transitionsCh == nil {
 		logger.Debug("no transition channel: skipping %s", t)
 		return
@@ -251,6 +294,7 @@ func largerThan(ip1, ip2 net.IP) bool {
 }
 
 // eventLoop vrrp event loop to handle various triggered events
+// https://datatracker.ietf.org/doc/html/rfc5798#section-6.4.3
 func (r *VirtualRouter) eventLoop() {
 	for {
 		switch r.state {
@@ -262,7 +306,7 @@ func (r *VirtualRouter) eventLoop() {
 					if r.priority == 255 || r.owner {
 						logger.Debugf("enter owner mode")
 						r.sendAdvertMessage()
-						if err := r.ipAddrAnnouncer.AnnounceAll(r); err != nil {
+						if err := r.ipAddrSpeaker.AnnounceAll(r); err != nil {
 							logger.Errorf("VirtualRouter.EventLoop: %v", err)
 						}
 						// set up advertisement timer
@@ -366,7 +410,7 @@ func (r *VirtualRouter) eventLoop() {
 			case <-r.masterDownTimer.C:
 				// Send an ADVERTISEMENT
 				r.sendAdvertMessage()
-				if err := r.ipAddrAnnouncer.AnnounceAll(r); err != nil {
+				if err := r.ipAddrSpeaker.AnnounceAll(r); err != nil {
 					logger.Errorf("VirtualRouter.EventLoop: %v", err)
 				}
 				// Set the Advertisement Timer to Advertisement interval
@@ -383,6 +427,7 @@ func (r *VirtualRouter) eventLoop() {
 }
 
 // eventSelector vrrp event selector to handle various triggered events
+// https://datatracker.ietf.org/doc/html/rfc5798#section-6.4.3
 func (r *VirtualRouter) eventSelector() {
 	for {
 		switch r.state {
@@ -394,7 +439,7 @@ func (r *VirtualRouter) eventSelector() {
 					if r.priority == 255 || r.owner {
 						logger.Debugf("enter owner mode")
 						r.sendAdvertMessage()
-						if err := r.ipAddrAnnouncer.AnnounceAll(r); err != nil {
+						if err := r.ipAddrSpeaker.AnnounceAll(r); err != nil {
 							logger.Errorf("VirtualRouter.EventLoop: %v", err)
 						}
 						// set up advertisement timer
@@ -482,7 +527,7 @@ func (r *VirtualRouter) eventSelector() {
 			case <-r.masterDownTimer.C: // Master_Down_Timer fired
 				// Send an ADVERTISEMENT
 				r.sendAdvertMessage()
-				if err := r.ipAddrAnnouncer.AnnounceAll(r); err != nil {
+				if err := r.ipAddrSpeaker.AnnounceAll(r); err != nil {
 					logger.Errorf("VirtualRouter.EventLoop: %v", err)
 				}
 				// Set the Advertisement Timer to Advertisement interval
@@ -516,4 +561,5 @@ func (r *VirtualRouter) StartWithEventSelector(ch chan Transition) {
 
 func (r *VirtualRouter) Stop() {
 	r.eventChannel <- EventShutdown
+	<-r.stop
 }

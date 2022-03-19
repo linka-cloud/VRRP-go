@@ -1,13 +1,18 @@
 package vrrp
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"net"
 	"syscall"
 	"time"
 
 	"github.com/mdlayher/arp"
+	"github.com/mdlayher/ethernet"
 	"github.com/mdlayher/ndp"
+	"github.com/sirupsen/logrus"
 )
 
 type IPConnection interface {
@@ -15,8 +20,17 @@ type IPConnection interface {
 	ReadMessage() (*VRRPPacket, error)
 }
 
+type AddrSpeaker interface {
+	AddrAnnouncer
+	AddrResponder
+}
+
 type AddrAnnouncer interface {
 	AnnounceAll(vr *VirtualRouter) error
+}
+
+type AddrResponder interface {
+	Respond(ctx context.Context, vr *VirtualRouter) error
 }
 
 type IPv6AddrAnnouncer struct {
@@ -60,6 +74,10 @@ func (nd *IPv6AddrAnnouncer) AnnounceAll(vr *VirtualRouter) error {
 	return nil
 }
 
+func (nd *IPv6AddrAnnouncer) Respond(ctx context.Context, vr *VirtualRouter) error {
+	return errors.New("unimplemented")
+}
+
 type IPv4AddrAnnouncer struct {
 	arpc *arp.Client
 }
@@ -86,21 +104,108 @@ func (ar *IPv4AddrAnnouncer) makeGratuitousPacket() *arp.Packet {
 
 // AnnounceAll send gratuitous ARP response for all protected IPv4 addresses
 func (ar *IPv4AddrAnnouncer) AnnounceAll(vr *VirtualRouter) error {
-	if err := ar.arpc.SetWriteDeadline(time.Now().Add(500 * time.Microsecond)); err != nil {
-		return fmt.Errorf("IPv4AddrAnnouncer.AnnounceAll: %v", err)
-	}
-	packet := ar.makeGratuitousPacket()
 	for k := range vr.protectedIPAddrs {
-		packet.SenderHardwareAddr = vr.netInterface.HardwareAddr
-		packet.SenderIP = net.IP(k[:]).To4()
-		packet.TargetHardwareAddr = BroadcastHADDR
-		packet.TargetIP = net.IP(k[:]).To4()
-		logger.Debugf("send gratuitous arp for %v", net.IP(k[:]))
-		if err := ar.arpc.WriteTo(packet, BroadcastHADDR); err != nil {
+		if err := ar.announce(net.IP(k[:]).To4(), vr.netInterface.HardwareAddr); err != nil {
 			return fmt.Errorf("IPv4AddrAnnouncer.AnnounceAll: %v", err)
 		}
 	}
 	return nil
+}
+
+func (ar *IPv4AddrAnnouncer) announce(ip net.IP, hwd net.HardwareAddr) error {
+	if err := ar.arpc.SetWriteDeadline(time.Now().Add(5 * time.Millisecond)); err != nil {
+		return fmt.Errorf("IPv4AddrAnnouncer.announce: %v", err)
+	}
+	packet := ar.makeGratuitousPacket()
+	packet.SenderHardwareAddr = hwd
+	packet.SenderIP = ip.To4()
+	packet.TargetHardwareAddr = BroadcastHADDR
+	packet.TargetIP = ip.To4()
+	logger.Debugf("send gratuitous arp for %v", ip)
+	if err := ar.arpc.WriteTo(packet, BroadcastHADDR); err != nil {
+		return fmt.Errorf("IPv4AddrAnnouncer.announce: %v", err)
+	}
+	return nil
+}
+
+func (ar *IPv4AddrAnnouncer) Respond(ctx context.Context, vr *VirtualRouter) error {
+	tk := time.NewTicker(time.Second)
+	errs := make(chan error, 1)
+	go func() {
+		errs <- ar.process(ctx, vr)
+	}()
+	for {
+		select {
+		case <-tk.C:
+			logger.Debug("ARP Annoncer: announcing virtual router ips")
+			if err := ar.AnnounceAll(vr); err != nil {
+				logger.WithError(err).Error("ARP Annoncer failed")
+			}
+		case err := <-errs:
+			logger.WithError(err).Error("ARP Responder failed")
+			return err
+		case <-ctx.Done():
+			// logger.WithError(ctx.Err()).Error("ARP Responder stopped")
+			return ctx.Err()
+		}
+	}
+}
+
+func (ar *IPv4AddrAnnouncer) process(ctx context.Context, vr *VirtualRouter) error {
+	for {
+		pkt, eth, err := ar.arpc.Read()
+		if err != nil {
+			logger.WithError(err).Error("ARP Responder read failed")
+			return err
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		logger.Debugf("ARP Responder request: %s", pkt.TargetIP)
+		// Ignore ARP replies.
+		if pkt.Operation != arp.OperationRequest {
+			continue
+		}
+		// Ignore ARP requests which are not broadcast or bound directly for this machine.
+		if !bytes.Equal(eth.Destination, ethernet.Broadcast) && !bytes.Equal(eth.Destination, vr.netInterface.HardwareAddr) {
+			continue
+		}
+		found := false
+		for ip := range vr.protectedIPAddrs {
+			if bytes.Equal(pkt.TargetIP, net.IP(ip[:]).To4()) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			logger.WithField("targetIP", pkt.TargetIP.String()).Debugf("skipping response")
+			continue
+		}
+		// Ignore ARP requests that the announcer tells us to ignore.
+		if err := ar.announce(pkt.TargetIP, vr.netInterface.HardwareAddr); err != nil {
+			return err
+		}
+
+		logger.WithFields(logrus.Fields{
+			"interface":   vr.iface,
+			"ip":          pkt.TargetIP,
+			"senderIP":    pkt.SenderIP,
+			"senderMAC":   pkt.SenderHardwareAddr,
+			"responseMAC": vr.netInterface.HardwareAddr,
+		}).Debug("got ARP request for service IP, sending response")
+
+		if err := ar.arpc.Reply(pkt, vr.netInterface.HardwareAddr, pkt.TargetIP); err != nil {
+			logger.WithFields(logrus.Fields{
+				"op":          "arpReply",
+				"interface":   vr.iface,
+				"ip":          pkt.TargetIP,
+				"senderIP":    pkt.SenderIP,
+				"senderMAC":   pkt.SenderHardwareAddr,
+				"responseMAC": vr.netInterface.HardwareAddr,
+				"error":       err,
+			}).Error("failed to send ARP reply")
+		}
+	}
 }
 
 type IPv4Con struct {
