@@ -1,7 +1,9 @@
 package vrrp
 
 import (
+	"fmt"
 	"net"
+	"os/exec"
 
 	"github.com/coreos/go-iptables/iptables"
 )
@@ -17,6 +19,10 @@ const (
 )
 
 func newForwarder() (*forwarder, error) {
+	out, err := exec.Command("sysctl", "-w", "net.ipv4.ip_forward=1").CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("'sysctl -w net.ipv4.ip_forward=1' failed: %v %v", string(out), err)
+	}
 	iptables, err := iptables.New()
 	if err != nil {
 		return nil, err
