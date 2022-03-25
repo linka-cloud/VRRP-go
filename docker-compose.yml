@@ -1,0 +1,35 @@
+version: '3'
+
+services:
+  app1:
+    image: linkacloud/vrrp-go-example
+    build:
+      context: .
+    privileged: true
+    networks:
+    - vrrp
+  app2:
+    image: linkacloud/vrrp-go-example
+    build:
+      context: .
+    privileged: true
+    cap_add:
+    - NET_ADMIN
+    networks:
+    - vrrp
+  client:
+    image: alpine
+    restart: always
+    networks:
+    - vrrp
+    command:
+    - sh
+    - -c
+    - apk add curl && while true; do curl -s 172.42.0.42:8888; sleep 1; done
+
+networks:
+  vrrp:
+    ipam:
+      driver: default
+      config:
+      - subnet: 172.42.0.0/24

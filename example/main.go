@@ -30,7 +30,7 @@ func init() {
 }
 
 func main() {
-	vips := []string{"172.17.0.42", "172.17.0.43"}
+	vips := []string{"172.42.0.42", "172.42.0.43"}
 	log := logrus.StandardLogger()
 	flag.Parse()
 	vrrp.SetLogLevel(logrus.InfoLevel)
@@ -94,7 +94,7 @@ func run(ctx context.Context) {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		logrus.Infof(r.RemoteAddr)
-		w.Write([]byte("ok"))
+		w.Write([]byte("ok\n"))
 	})
 	srv := http.Server{
 		Addr:    ":8888",
