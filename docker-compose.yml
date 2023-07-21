@@ -6,6 +6,10 @@ services:
     build:
       context: .
     privileged: true
+    command:
+    - -log=INFO
+    - -gossip-port=18888
+    - -gossip-addrs=app1:18888,app2:18888
     networks:
     - vrrp
   app2:
@@ -13,8 +17,10 @@ services:
     build:
       context: .
     privileged: true
-    cap_add:
-    - NET_ADMIN
+    command:
+    - -log=INFO
+    - -gossip-port=18888
+    - -gossip-addrs=app1:18888,app2:18888
     networks:
     - vrrp
   client:
@@ -25,7 +31,7 @@ services:
     command:
     - sh
     - -c
-    - apk add curl && while true; do curl -s 172.42.0.42:8888; sleep 1; done
+    - apk add curl && while true; do curl -s -m 1 172.42.0.42:8888; sleep 1; done
 
 networks:
   vrrp:

@@ -8,11 +8,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 
 	"github.com/sirupsen/logrus"
 
-	vrrp "go.linka.cloud/vrrp-go"
+	"go.linka.cloud/vrrp-go"
 )
 
 var (
@@ -20,6 +21,10 @@ var (
 	priority int
 	iface    string
 	preemt   bool
+	logLvl   string
+
+	gossipPort  int
+	gossipAddrs string
 )
 
 func init() {
@@ -27,25 +32,39 @@ func init() {
 	flag.IntVar(&priority, "pri", 100, "router priority")
 	flag.StringVar(&iface, "iface", "eth0", "network interface")
 	flag.BoolVar(&preemt, "preempt", false, "set preempt mode")
+	flag.StringVar(&logLvl, "log", "INFO", "log level: DEBUG|INFO|WARN|ERROR")
+	flag.IntVar(&gossipPort, "gossip-port", 0, "gossip port")
+	flag.StringVar(&gossipAddrs, "gossip-addrs", "", "gossip addresses")
 }
 
 func main() {
 	vips := []string{"172.42.0.42", "172.42.0.43"}
 	log := logrus.StandardLogger()
 	flag.Parse()
-	vrrp.SetLogLevel(logrus.InfoLevel)
+	if lvl, err := logrus.ParseLevel(logLvl); err == nil {
+		vrrp.SetLogLevel(lvl)
+	} else {
+		logrus.Warnf("invalid log level: %v, using INFO level", logLvl)
+		vrrp.SetLogLevel(logrus.InfoLevel)
+	}
 	var ips []net.IP
 	for _, v := range vips {
 		ips = append(ips, net.ParseIP(v))
 	}
+	var addrs []string
+	if gossipPort > 0 {
+		addrs = strings.Split(gossipAddrs, ",")
+	}
+	interval := 500 * time.Millisecond
 	vr, err := vrrp.NewVirtualRouter(
 		vrrp.WithVRID(byte(vrid)),
 		vrrp.WithInterface(iface),
-		vrrp.WithAdvInterval(100*time.Millisecond),
+		vrrp.WithAdvInterval(interval),
 		vrrp.WithPriority(byte(priority)),
-		vrrp.WithMasterAdvInterval(100*time.Millisecond),
+		vrrp.WithMasterAdvInterval(interval),
 		vrrp.WithPreemtpMode(preemt),
 		vrrp.WithIPvXAddr(ips...),
+		vrrp.WithGossip(gossipPort, addrs...),
 	)
 	if err != nil {
 		log.Fatal(err)

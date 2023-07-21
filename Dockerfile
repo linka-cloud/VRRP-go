@@ -9,7 +9,7 @@ RUN go mod download
 
 COPY . .
 
-RUN go build -buildvcs=false -ldflags="-s -w" -o vr ./example
+RUN go build -buildvcs=false -trimpath -ldflags="-s -w" -o vr ./example
 
 FROM alpine
 

@@ -16,9 +16,7 @@ type VirtualRouter struct {
 	masterDownInterval            uint16
 	preempt                       bool
 	owner                         bool
-	macAddressIPv4                net.HardwareAddr
-	macAddressIPv6                net.HardwareAddr
-	//
+
 	netInterface        *net.Interface
 	ipvX                byte
 	preferredSourceIP   net.IP
@@ -36,6 +34,9 @@ type VirtualRouter struct {
 	cancelSpeaker func()
 	stop          chan struct{}
 	fw            *forwarder
+
+	gossipPort  int
+	gossipAddrs []string
 }
 
 // NewVirtualRouter create a new virtual router with designated parameters
@@ -76,18 +77,22 @@ func NewVirtualRouter(opts ...Option) (*VirtualRouter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("NewVirtualRouter: %w", err)
 	}
-	vr.macAddressIPv4, _ = net.ParseMAC(fmt.Sprintf("00-00-5E-00-01-%X", vr.id))
-	vr.macAddressIPv6, _ = net.ParseMAC(fmt.Sprintf("00-00-5E-00-02-%X", vr.id))
+
+	var remote net.IP
 	if vr.ipvX == IPv4 {
 		// set up ARP client
 		vr.ipAddrSpeaker, err = NewIPv4AddrAnnouncer(networkInterface)
 		if err != nil {
 			return nil, err
 		}
-		// set up IPv4 interface
-		vr.ipLayerInterface, err = NewIPv4Conn(vr.preferredSourceIP, MultiAddrIPv4)
-		if err != nil {
-			return nil, err
+		if vr.gossipPort == 0 {
+			// set up IPv4 interface
+			vr.ipLayerInterface, err = NewIPv4Conn(vr.preferredSourceIP, MultiAddrIPv4)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			remote = MultiAddrIPv4
 		}
 	} else {
 		// set up ND client
@@ -95,8 +100,18 @@ func NewVirtualRouter(opts ...Option) (*VirtualRouter, error) {
 		if err != nil {
 			return nil, err
 		}
-		// set up IPv6 interface
-		vr.ipLayerInterface, err = NewIPv6Con(vr.preferredSourceIP, MultiAddrIPv6)
+		if vr.gossipPort == 0 {
+			// set up IPv6 interface
+			vr.ipLayerInterface, err = NewIPv6Con(vr.preferredSourceIP, MultiAddrIPv6)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			remote = MultiAddrIPv6
+		}
+	}
+	if vr.gossipPort != 0 {
+		vr.ipLayerInterface, err = NewGossip(vr.ipvX, vr.preferredSourceIP, remote, vr.gossipPort, time.Duration(vr.advertisementInterval*5)*time.Millisecond, vr.gossipAddrs...)
 		if err != nil {
 			return nil, err
 		}
@@ -185,6 +200,7 @@ func (r *VirtualRouter) fetchVRRPPacket() {
 			logger.Errorf("VirtualRouter.fetchVRRPPacket: %v", err)
 			continue
 		}
+		logger.Debugf("received packet from %s", packet.Pshdr.SAddr.String())
 		if r.id == packet.GetVirtualRouterID() {
 			r.packetQueue <- packet
 			logger.Trace("VirtualRouter.fetchVRRPPacket: received one advertisement")

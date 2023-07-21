@@ -95,6 +95,14 @@ func WithIPvXAddr(ips ...net.IP) Option {
 	}
 }
 
+func WithGossip(port int, addrs ...string) Option {
+	return func(r *VirtualRouter) error {
+		r.gossipPort = port
+		r.gossipAddrs = addrs
+		return nil
+	}
+}
+
 func (r *VirtualRouter) addIPvXAddr(ip net.IP) {
 	var key [16]byte
 	copy(key[:], ip)

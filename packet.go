@@ -202,11 +202,7 @@ func (packet *VRRPPacket) ValidateCheckSum(pshdr *PseudoHeader) bool {
 	for (sum >> 16) > 0 {
 		sum = sum&65535 + sum>>16
 	}
-	if uint16(sum) == 65535 {
-		return true
-	} else {
-		return false
-	}
+	return uint16(sum) == 65535
 }
 
 func (packet *VRRPPacket) ToBytes() []byte {
