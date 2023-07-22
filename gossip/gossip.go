@@ -156,6 +156,7 @@ func NewTransport(ctx context.Context, name string, ip string, port int, interva
 	config.AdvertiseAddr = ip
 	config.AdvertisePort = port
 	config.GossipInterval = interval
+	config.Logger = newLogger()
 	t = &Transport{
 		delegate: &delegate{
 			ctx: ctx,
